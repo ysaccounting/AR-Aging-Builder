@@ -1,95 +1,86 @@
-# AR Aging Report Generator
+# Vendor Credits
 
-A Streamlit app hosted on Railway that converts a raw invoices export into a formatted **AR Aging Summary** Excel workbook — matching the Y&S Group reporting layout.
+Web app: upload a QuickBooks **Balance Sheet** export and an **A/P Aging Summary**
+export (`.xlsx`, `.xlsm`, or `.csv`). Download a workbook with three tabs —
+**Vendor Credits**, **Other TC**, and **Other AP**.
 
-## Features
+This is a from-scratch rebuild of the `Vendor_Credits.xlsm` Power Query workbook. The
+app does the paste-and-refresh steps for you: it reads the raw QuickBooks reports,
+extracts the ticket-credit accounts itself, and produces the same three output tabs.
 
-- Upload any invoices `.xlsx` export (full or pre-filtered format)
-- Select an **As of Date** — aging buckets recalculate automatically
-- Generates a two-tab Excel workbook:
-  - **AR Aging Summary** — pivot by network × aging bucket, whole-dollar currency with live SUMIFS formulas
-  - **Invoice Details** — full filtered invoice list with frozen header row
-- Only networks with outstanding balances appear on the summary tab
-- Company name normalization (YSA 2/3 → YSA, YS Tickets Spec → YS Tickets, etc.)
-- Each report run is logged to Supabase
+## What it does
 
-## Aging Buckets
+1. **Ticket Credits (from the Balance Sheet).** Every account whose name ends with
+   `(TC)` becomes a vendor. ` (TC)` is stripped to get the vendor name; the account's
+   balance is the **Ticket Credit Amount**. `Total …` and `(DEP)` lines are ignored.
+2. **A/P (from the A/P Aging Summary).** Each vendor's payable is the **sum of the five
+   aging buckets** (Current, 1-30, 31-60, 61-90, 91 and over). The report's own Total
+   column is ignored and recomputed from the buckets.
+3. **Match.** For each ticket-credit vendor, compare its Ticket Credit Amount (TC) to its
+   A/P total (AP). The **lower** of the two is the credit that can be applied:
+   - `Lower Option` = `TC` if TC < AP, `AP` if AP < TC, else `Equal`.
+   - `Difference (AP - TC)` = AP − TC.
 
-| Bucket | Days Outstanding |
-|---|---|
-| Current | 0 or fewer |
-| 1 to 30 | 1–30 days |
-| 31 to 60 | 31–60 days |
-| 61 to 90 | 61–90 days |
-| 91 and Over | 91+ days |
+### Output tabs
 
-## Local Setup
+- **Vendor Credits** — vendors that have both a credit and a payable. `Expense Line
+  Amount` is the lower of TC / AP (the amount to apply). Columns: Vendor, Payment Date,
+  Expense Account, Expense Line Amount, Column1, Lower Option, Ticket Credit Amount,
+  AP Aging Amount, Difference (AP - TC).
+- **Other TC** — ticket credits with **no payable to offset** (non-negative credit, A/P ≤ 0).
+  These are leftover credit balances. Columns: Vendor, Payment Date, Expense Account,
+  Ticket Credit Amount.
+- **Other AP** — payables for vendors that received **no credit**, broken out by aging
+  bucket, with Expense Account set to `Cost of Goods Sold`. Columns: Vendor, Payment Date,
+  Expense Account, Expense Line Amount, Column1, Current, 1 - 30, 31 - 60, 61 - 90,
+  91 and over.
+
+Each tab carries a live `=SUM(...)` **TOTAL** row on its amount column.
+
+### Matching notes
+
+- Vendor names must match between the two reports (e.g. `Arizona Diamondbacks (TC)` on the
+  Balance Sheet matches `Arizona Diamondbacks` on the A/P Aging). A name that exists on only
+  one side flows to Other TC or Other AP accordingly.
+- **Negative** ticket credits are not applied as a credit; the vendor's payable (if any)
+  appears in Other AP.
+- The three tabs partition the data: every A/P vendor lands in exactly one of Vendor Credits
+  or Other AP.
+
+## Payment date
+
+The **Payment Date** column (and the download filename) use the month-end date. The app
+auto-detects it from the `As of …` line in the reports; you can override it with the
+optional date field in the UI.
+
+## Input format
+
+The app expects the **raw** QuickBooks exports:
+
+- **Balance Sheet** — an account column containing the `… (TC)` rows and an amount column.
+  Amounts may be plain numbers, `=123.45` literal formulas, `$1,234.56`, or `(123)` negatives.
+- **A/P Aging Summary** — a Vendor column plus the five aging-bucket columns (matched by
+  header name, so column order doesn't matter). A Total column is optional.
+
+## Run locally
 
 ```bash
-# 1. Clone the repo
-git clone https://github.com/YOUR_ORG/ar-aging-report.git
-cd ar-aging-report
-
-# 2. Create and activate a virtual environment
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-
-# 3. Install dependencies
 pip install -r requirements.txt
-
-# 4. Set environment variables
-export SUPABASE_URL=https://your-project.supabase.co/rest/v1/
-export SUPABASE_KEY=your-anon-key
-
-# 5. Run the app
-streamlit run app.py
+python app.py        # http://localhost:5000
 ```
 
-The app will open at `http://localhost:8501`.
+## Deploy: GitHub → Railway
 
-## Deploying to Railway
+1. Push this folder to a GitHub repo.
+2. Railway → New Project → Deploy from GitHub repo → pick it.
+3. Railway auto-detects Python (Nixpacks) and uses the start command in `railway.json`.
+   No env vars needed; `$PORT` is provided automatically.
 
-1. Push this repo to GitHub.
-2. Go to [railway.app](https://railway.app) → **New Project** → **Deploy from GitHub repo**.
-3. Select your repo — Railway auto-detects Python and installs `requirements.txt`.
-4. Under **Settings → Deploy**, set the start command:
-   ```
-   streamlit run app.py --server.port=$PORT --server.address=0.0.0.0
-   ```
-5. Under **Variables**, add:
-   - `SUPABASE_URL` → `https://your-project.supabase.co/rest/v1/`
-   - `SUPABASE_KEY` → your Supabase anon key
-6. Click **Deploy** — Railway redeploys automatically on every GitHub push.
+## Files
 
-## Input File Requirements
-
-Two export formats are supported. The app auto-detects which one was uploaded.
-
-**Full format** (23 columns) — includes `Paid`, `IsCancelled`; app filters to unpaid/active invoices.
-
-**Light format** (8 columns) — pre-filtered export; all rows treated as unpaid and finalized.
-
-Both formats must include:
-
-| Column | Description |
-|---|---|
-| `Bal.` | Outstanding balance (numeric) |
-| `Client` | Network / marketplace name |
-| `Company` | Broker entity name |
-| `Inv#` | Invoice number |
-| `Ext Order #` | External order reference |
-| `Status` | Invoice status |
-| `Created` | Invoice creation datetime |
-
-## Project Structure
-
-```
-ar-aging-report/
-├── app.py              # Streamlit UI
-├── report_builder.py   # Excel generation logic
-├── logger.py           # Supabase usage logging
-├── requirements.txt    # Python dependencies
-├── Procfile            # Railway start command
-├── .gitignore
-└── README.md
-```
+| File | Purpose |
+|------|---------|
+| `app.py` | Flask backend — parsing, reconciliation, workbook builder |
+| `index.html` | Single-page upload UI |
+| `requirements.txt` | Python dependencies |
+| `Procfile` / `railway.json` | Start command for Railway |
