@@ -90,6 +90,10 @@ def detect_format(df: pd.DataFrame) -> str:
 
 def load_and_filter(data: bytes, as_of_date: pd.Timestamp) -> pd.DataFrame:
     df = pd.read_excel(io.BytesIO(data))
+
+    # Normalize Created to datetime regardless of format (string, datetime, etc.)
+    df["Created"] = pd.to_datetime(df["Created"], errors="coerce")
+
     fmt = detect_format(df)
 
     if fmt == "full":
